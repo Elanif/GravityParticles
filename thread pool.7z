@@ -1,0 +1,754 @@
+#include<SFML/Graphics.hpp>
+#include<cmath>
+#include<random>
+#include<iostream>
+#include<iomanip>
+#include<vector>
+#include<array>
+#include<algorithm>
+#include<thread>
+#include<SafeContainers.hpp>
+
+//std::vector<std::vector<std::pair<std::size_t, std::size_t>>> round_robin(std::size_t teams) {
+//    std::size_t rounds = teams - 1;
+//    std::size_t mpr = teams / 2;
+//
+//    std::vector<std::size_t> t(teams);
+//    for (std::size_t i = 0; i < teams; ++i) {
+//        t[i] = i;
+//    }
+//
+//    std::vector<std::vector<std::pair<std::size_t, std::size_t>>> matches(rounds, std::vector<std::pair<std::size_t, std::size_t>>(mpr));
+//    for (std::size_t r = 0; r < rounds; ++r) {
+//        for (std::size_t m = 0; m < mpr; ++m) {
+//            matches[r][m] = std::make_pair(t[m], t[teams - m -1]);
+//        }
+//        t.erase(std::find(t.begin(), t.end(), rounds - r ));
+//        t.insert(t.begin() + 1, rounds - r);
+//    }
+//    return matches;
+//}
+
+typedef sf::Vector2<double> Vector2d;
+
+class Particles : public sf::Drawable, public sf::Transformable 
+{
+public:
+    Particles(sf::PrimitiveType pt, std::size_t size):
+        vertexes(pt,size)
+    {
+        vertexes.resize(size);
+        p_position.resize(size, {{0},{0}});
+        p_speed.resize(size, {{0},{0}});
+    }
+
+    Particles(sf::PrimitiveType pt):
+        Particles(pt,0)
+    {};
+
+protected:
+    sf::VertexArray vertexes;
+    std::vector<Vector2d> p_position;
+    std::vector<Vector2d> p_speed;
+
+    virtual void draw(sf::RenderTarget& target, sf::RenderStates states) const
+    {
+        // apply the 
+        sf::VertexArray vertexes_copy=vertexes;
+        for (std::size_t i = 0; i < vertexes.getVertexCount(); ++i) {
+            vertexes_copy[i].position.x = p_position[i].x;
+            vertexes_copy[i].position.y = p_position[i].y;
+        }
+        states.transform *= getTransform();
+
+        // our particles don't use a texture
+        states.texture = NULL;
+
+        // draw the vertex array
+        target.draw(vertexes_copy, states);
+    }
+private:
+};
+
+template<typename f>
+constexpr f distance(const sf::Vector2<f> v, const sf::Vector2<f> w) {
+    const f dx = w.x - v.x;
+    const f dy = w.y - v.y;
+    return std::sqrt(dx * dx + dy * dy);
+}
+
+template<typename f>
+constexpr f distance_squared(const sf::Vector2<f> v, const sf::Vector2<f> w) {
+    const f dx = w.x - v.x;
+    const f dy = w.y - v.y;
+    return dx * dx + dy * dy;
+}
+
+template<typename f>
+constexpr sf::Vector2<f> inverse_square_on_second(const sf::Vector2<f> v, const sf::Vector2<f> w, f error = { 1 }) {
+    const f dx = w.x - v.x;
+    const f dy = w.y - v.y;
+    if (dx == 0 && dy == 0) return { {0},{0} };
+    const f distance = std::sqrt(dx * dx + dy * dy);
+    if (distance > error) {
+        const f cubed = distance * distance * distance;
+        return { dx / cubed, dy / cubed };
+    }
+    return { dx / distance, dy / distance };
+}
+
+template<typename f, typename d>
+constexpr sf::Vector2<f> normalize_on_second(const sf::Vector2<f> v, const sf::Vector2<f> w, d dist) {
+    const f dx = w.x - v.x;
+    const f dy = w.y - v.y;
+    return { static_cast<f>(dx / dist), static_cast<f>(dy / dist) };
+}
+struct Point {
+    Vector2d& position;
+    Vector2d& speed;
+    const double mass{ 1 };
+    Point(Vector2d& position, Vector2d& speed, double mass)
+        :position(position), speed(speed), mass(mass) {};
+};
+
+enum class type {
+    classic,
+    probabilistic
+};
+
+struct attractor {
+    const double gravity_constant = 1.e-5;
+    const double minstd_rand_max = std::minstd_rand::max();
+    const type t;
+
+    attractor(type t) :
+        t(t) 
+    {
+        /*std::random_device rd{};
+        auto seed = rd();
+        std::cout << "Seed=" << seed<<"\n";
+        gen.seed(seed);
+        gen.seed(1607590604llu);
+        std::cout << "Actual seed=1607590604llu\n";*/
+    };
+    template<class RandomEngine>
+    void operator()(Point& p1, Point& p2, RandomEngine& re) const {
+        switch (t) {
+        case type::classic:
+            classic_gravity(p1, p2, 1);
+            break;
+        case type::probabilistic:
+            probabilistic_gravity(p1, p2, re);
+            break;
+        }
+    };
+
+    void classic_gravity(Point& p1, Point& p2, const double& min_distance) const {
+        Vector2d inversesquare = inverse_square_on_second(p1.position, p2.position, min_distance); 
+        inversesquare.x *= gravity_constant;
+        inversesquare.y *= gravity_constant;
+        p2.speed.x -= inversesquare.x*p1.mass;
+        p2.speed.y -= inversesquare.y * p1.mass;
+        p1.speed.x += inversesquare.x * p2.mass;
+        p1.speed.y += inversesquare.y * p2.mass;
+    }
+
+    long long unsigned int success = 0;
+    long long unsigned int total = 0;
+
+    void probabilistic_gravity(Point& p1, Point& p2, std::minstd_rand& re)  const {
+        double rand = re();
+        double d = distance_squared(p1.position, p2.position);
+        /*double d_norm = min_distance / d;
+        std::bernoulli_distribution bernoulli(d_norm);
+        if (bernoulli(gen)) {
+            auto acceleration = normalize_on_second(p1.position, p2.position, std::sqrt(d));
+            acceleration.x *= probabilistic_gravity_constant;
+            acceleration.y *= probabilistic_gravity_constant;
+            p2.speed.x -= acceleration.x * p1.mass;
+            p2.speed.y -= acceleration.y * p1.mass;
+            p1.speed.x += acceleration.x * p2.mass;
+            p1.speed.y += acceleration.y * p2.mass;
+        }*/
+        if (rand * d < minstd_rand_max) {
+            auto acceleration = normalize_on_second(p1.position, p2.position, std::sqrt(d));
+            acceleration.x *= gravity_constant;
+            acceleration.y *= gravity_constant;
+            p2.speed.x -= acceleration.x * p1.mass;
+            p2.speed.y -= acceleration.y * p1.mass;
+            p1.speed.x += acceleration.x * p2.mass;
+            p1.speed.y += acceleration.y * p2.mass;
+        }
+    }
+
+    void probabilistic_gravity(Point& p1, Point& p2, double rand_numb)  const {
+        double d = distance_squared(p1.position, p2.position);
+        /*double d_norm = min_distance / d;
+        std::bernoulli_distribution bernoulli(d_norm);
+        if (bernoulli(gen)) {
+            auto acceleration = normalize_on_second(p1.position, p2.position, std::sqrt(d));
+            acceleration.x *= probabilistic_gravity_constant;
+            acceleration.y *= probabilistic_gravity_constant;
+            p2.speed.x -= acceleration.x * p1.mass;
+            p2.speed.y -= acceleration.y * p1.mass;
+            p1.speed.x += acceleration.x * p2.mass;
+            p1.speed.y += acceleration.y * p2.mass;
+        }*/
+        if (rand_numb * d < minstd_rand_max) {
+            auto acceleration = normalize_on_second(p1.position, p2.position, std::sqrt(d));
+            acceleration.x *= gravity_constant;
+            acceleration.y *= gravity_constant;
+            p2.speed.x -= acceleration.x * p1.mass;
+            p2.speed.y -= acceleration.y * p1.mass;
+            p1.speed.x += acceleration.x * p2.mass;
+            p1.speed.y += acceleration.y * p2.mass;
+        }
+    }
+
+    void print_stats() {
+        //std::cout << "Success rate = " << static_cast<double>(success) / static_cast<double>(total) <<"\n";
+    }
+};
+
+class GravityParticles : public Particles {
+public:
+    const double gravity_constant = 1.e-5;
+    attractor attr;
+
+    static const unsigned int threads = 2u;
+    static const unsigned int cache_line_length = 32u;
+    //const std::vector<std::vector<std::pair<size_t, size_t>>> thread_pairs = round_robin(threads*2);
+    const std::array<std::array<std::pair<size_t, size_t>, 2>, 3> thread_pairs = std::array<std::array<std::pair<size_t, size_t>, 2>, 3>{
+        std::array<std::pair<size_t, size_t>, 2>{ std::pair<std::size_t,std::size_t>(0,1), std::pair<std::size_t,std::size_t>(2,3) },
+        std::array<std::pair<size_t, size_t>, 2>{ std::pair<std::size_t,std::size_t>(0,2), std::pair<std::size_t,std::size_t>(1,3) },
+        std::array<std::pair<size_t, size_t>, 2>{ std::pair<std::size_t,std::size_t>(0,3), std::pair<std::size_t,std::size_t>(1,2) }
+    };
+    std::minstd_rand minstd_rands[threads*2u];
+    std::size_t sections_start[threads * 2u];
+    std::size_t sections_end[threads * 2u];
+    std::thread thread_array[threads*2u];
+
+    GravityParticles(sf::PrimitiveType pt, type t) :
+        Particles(pt),
+        attr(t)
+    {};
+    GravityParticles(sf::PrimitiveType pt, std::size_t size, type t) 
+        :Particles(pt,size),
+        attr(t)
+    {
+        std::uniform_real_distribution<double> uid(0, 800);
+        for (std::size_t i = 0; i < vertexes.getVertexCount(); ++i) {
+            p_position[i]= { uid(minstd_rands[0]),uid(minstd_rands[0])};
+        }
+        sections_start[0] = 0;
+        if (vertexes.getVertexCount() <= cache_line_length)
+            sections_end[0] = vertexes.getVertexCount();
+        else {
+            sections_end[0] = static_cast<unsigned int>(vertexes.getVertexCount()) / (threads * 2u);
+            sections_end[0] = ((sections_end[0]+1) / cache_line_length) * cache_line_length;
+            for (unsigned int i = 1; i < threads * 2 && sections_end[i-1]< vertexes.getVertexCount(); ++i) {//stupid warning even after the cast 
+                sections_end[i] = ((i + 1u) * static_cast<unsigned int>(vertexes.getVertexCount())) / (threads * 2u);
+                sections_end[i] = (sections_end[i]/ cache_line_length) * cache_line_length;
+                sections_start[i] = sections_end[i - 1];
+            }
+            if (sections_end[threads * 2 - 1] > vertexes.getVertexCount())
+                sections_end[0] = vertexes.getVertexCount();
+        }
+    }
+
+    void perfect_setup() {
+        p_position[0] = { 399.51,399.51 };
+        p_position[1] = { 400.49,400.49 };
+    }
+
+    void update_multithreading_cross(std::minstd_rand& minstdrand, std::size_t a_start, std::size_t a_end, std::size_t b_start, std::size_t b_end) {
+        for (std::size_t i = a_start; i < a_end; ++i) {
+            for (std::size_t j = b_start; j < b_end; ++j) {
+                Point a = Point(p_position[i], p_speed[i], 1);
+                Point b = Point(p_position[j], p_speed[j], 1);
+                attr(a, b, minstdrand);
+            }
+        }
+    }
+    void update_multithreading_cross2(std::minstd_rand& minstdrand, std::size_t a_start, std::size_t a_end, std::size_t b_start, std::size_t b_end) {
+        for (std::size_t i = a_start; i < a_end; ++i) {
+            for (std::size_t j = b_start; j < b_end; ++j) {
+                double d = distance_squared(p_position[i], p_position[j]);
+                double rand_numb = minstdrand();
+                if (rand_numb * d < std::minstd_rand::max()) {
+                    auto acceleration = normalize_on_second(p_position[i], p_position[j], std::sqrt(d));
+                    acceleration.x *= gravity_constant;
+                    acceleration.y *= gravity_constant;
+                    p_speed[j].x -= acceleration.x;
+                    p_speed[j].y -= acceleration.y;
+                    p_speed[i].x += acceleration.x;
+                    p_speed[i].y += acceleration.y;
+                }
+            }
+        }
+    }
+    void update_multithreading_cross3(std::minstd_rand& minstdrand, std::size_t first_contender, std::size_t second_contender) {
+        const std::size_t a_start = sections_start[first_contender];
+        const std::size_t a_end = sections_end[first_contender];
+        const std::size_t b_start = sections_start[second_contender];
+        const std::size_t b_end = sections_end[second_contender];
+        for (std::size_t i = a_start; i < a_end; ++i) {
+            for (std::size_t j = b_start; j < b_end; ++j) {
+                double d = distance_squared(p_position[i], p_position[j]);
+                double rand_numb = minstdrand();
+                if (rand_numb * d < std::minstd_rand::max()) {
+                    auto acceleration = normalize_on_second(p_position[i], p_position[j], std::sqrt(d));
+                    acceleration.x *= gravity_constant;
+                    acceleration.y *= gravity_constant;
+                    p_speed[j].x -= acceleration.x;
+                    p_speed[j].y -= acceleration.y;
+                    p_speed[i].x += acceleration.x;
+                    p_speed[i].y += acceleration.y;
+                }
+            }
+        }
+    }
+
+    void update_multithreading_own(std::minstd_rand& minstdrand, std::size_t a_start, std::size_t a_end) {
+        for (std::size_t i = a_start; i < a_end - 1; ++i) {
+            for (std::size_t j = i + 1; j < a_end; ++j) {
+                Point a = Point(p_position[i], p_speed[i], 1);
+                Point b = Point(p_position[j], p_speed[j], 1);
+                attr(a, b, minstdrand);
+            }
+        }
+        for (std::size_t i = a_start; i < a_end; ++i) {
+            p_position[i].x += p_speed[i].x;
+            p_position[i].y += p_speed[i].y;
+        }
+    }
+
+    void update_multithreading_own2(std::minstd_rand& minstdrand, std::size_t a_start, std::size_t a_end) {
+        for (std::size_t i = a_start; i < a_end - 1; ++i) {
+            for (std::size_t j = i + 1; j < a_end; ++j) {
+                double d = distance_squared(p_position[i], p_position[j]);
+                double rand_numb = minstdrand();
+                if (rand_numb * d < std::minstd_rand::max()) {
+                    auto acceleration = normalize_on_second(p_position[i], p_position[j], std::sqrt(d));
+                    acceleration.x *= gravity_constant;
+                    acceleration.y *= gravity_constant;
+                    p_speed[j].x -= acceleration.x;
+                    p_speed[j].y -= acceleration.y;
+                    p_speed[i].x += acceleration.x;
+                    p_speed[i].y += acceleration.y;
+                }
+            }
+        }
+        for (std::size_t i = a_start; i < a_end; ++i) {
+            p_position[i].x += p_speed[i].x;
+            p_position[i].y += p_speed[i].y;
+        }
+    }
+
+    void update_multithreading_own3(std::minstd_rand& minstdrand, std::size_t first_contender) {
+        const std::size_t a_start = sections_start[first_contender];
+        const std::size_t a_end = sections_end[first_contender];
+        for (std::size_t i = a_start; i < a_end - 1; ++i) {
+            for (std::size_t j = i + 1; j < a_end; ++j) {
+                double d = distance_squared(p_position[i], p_position[j]);
+                double rand_numb = minstdrand();
+                if (rand_numb * d < std::minstd_rand::max()) {
+                    auto acceleration = normalize_on_second(p_position[i], p_position[j], std::sqrt(d));
+                    acceleration.x *= gravity_constant;
+                    acceleration.y *= gravity_constant;
+                    p_speed[j].x -= acceleration.x;
+                    p_speed[j].y -= acceleration.y;
+                    p_speed[i].x += acceleration.x;
+                    p_speed[i].y += acceleration.y;
+                }
+            }
+        }
+        for (std::size_t i = a_start; i < a_end; ++i) {
+            p_position[i].x += p_speed[i].x;
+            p_position[i].y += p_speed[i].y;
+        }
+    }
+
+    void update_multithreading_pre2() {
+        thread_array[0] = std::thread(&GravityParticles::update_multithreading_cross, this, std::ref(minstd_rands[0]), sections_start[0], sections_end[0], sections_start[1], sections_end[1]);
+        thread_array[1] = std::thread(&GravityParticles::update_multithreading_cross, this, std::ref(minstd_rands[1]), sections_start[2], sections_end[2], sections_start[3], sections_end[3]);
+        if (thread_array[0].joinable())
+            thread_array[0].join();
+        if (thread_array[1].joinable())
+            thread_array[1].join();
+
+        thread_array[0] = std::thread(&GravityParticles::update_multithreading_cross, this, std::ref(minstd_rands[0]), sections_start[0], sections_end[0], sections_start[2], sections_end[2]);
+        thread_array[1] = std::thread(&GravityParticles::update_multithreading_cross, this, std::ref(minstd_rands[1]), sections_start[1], sections_end[1], sections_start[3], sections_end[3]);
+        if (thread_array[0].joinable())
+            thread_array[0].join();
+        if (thread_array[1].joinable())
+            thread_array[1].join();
+
+        thread_array[0] = std::thread(&GravityParticles::update_multithreading_cross, this, std::ref(minstd_rands[0]), sections_start[0], sections_end[0], sections_start[3], sections_end[3]);
+        thread_array[1] = std::thread(&GravityParticles::update_multithreading_cross, this, std::ref(minstd_rands[1]), sections_start[1], sections_end[1], sections_start[2], sections_end[2]);
+        if (thread_array[0].joinable())
+            thread_array[0].join();
+        if (thread_array[1].joinable())
+            thread_array[1].join();
+
+        thread_array[0] = std::thread(&GravityParticles::update_multithreading_own, this, std::ref(minstd_rands[0]), sections_start[0], sections_end[0]);
+        thread_array[1] = std::thread(&GravityParticles::update_multithreading_own, this, std::ref(minstd_rands[1]), sections_start[1], sections_end[1]);
+        thread_array[2] = std::thread(&GravityParticles::update_multithreading_own, this, std::ref(minstd_rands[2]), sections_start[2], sections_end[2]);
+        thread_array[3] = std::thread(&GravityParticles::update_multithreading_own, this, std::ref(minstd_rands[3]), sections_start[3], sections_end[3]);
+        if (thread_array[0].joinable())
+            thread_array[0].join();
+        if (thread_array[1].joinable())
+            thread_array[1].join();
+        if (thread_array[2].joinable())
+            thread_array[2].join();
+        if (thread_array[3].joinable())
+            thread_array[3].join();
+    }
+
+    std::condition_variable worder_cv[threads];
+    bool worker_bool[threads]={true};
+    // maybe not needed
+    bool time_to_join = false;
+    std::condition_variable main_cv;
+    std::condition_variable worker_cv;
+    std::mutex main_mutex;
+    std::mutex worker_m;
+    unsigned int threads_done = 0;
+    SafeQueue<std::pair<std::size_t, std::size_t> > pair_queue;
+
+    void wait_work(std::condition_variable& cv, std::mutex& worker_m, std::minstd_rand& minstdrand) {
+        do {
+            std::unique_lock<std::mutex> lck(worker_m);
+            cv.wait(lck, [&]() { return (pair_queue.size() > 0) || time_to_join; });
+            if (time_to_join) return;
+            auto p = pair_queue.pop();
+            cv.notify_one();
+
+            if (p.first!=p.second) 
+                update_multithreading_cross3(minstdrand, p.first, p.second);
+            else
+                update_multithreading_own3(minstdrand, p.first);
+
+            //std::cout << "Working on (" << p.first << "," << p.second << ")\n";
+
+            {
+                std::scoped_lock lck(main_mutex);
+                ++threads_done;
+            }
+            main_cv.notify_one();
+        } while (!time_to_join); //ik it's ub
+    }
+
+    void start_work() {
+        for (unsigned int i=0; i<threads*2; ++i)
+            thread_array[i] = std::thread(&GravityParticles::wait_work, this, std::ref(worker_cv), std::ref(worker_m), std::ref(minstd_rands[i]));
+    }
+
+    void continue_work() {
+        pair_queue.push({ { 0,1 } ,{ 2,3 } });
+        worker_cv.notify_one();
+        std::unique_lock<std::mutex> lck(main_mutex);
+        main_cv.wait(lck, [&]() {return threads_done >= 2; });
+        threads_done = 0;
+        pair_queue.push({ { 0,2 } ,{ 1,3 } });
+        worker_cv.notify_one();
+        main_cv.wait(lck, [&]() {return threads_done >= 2; });
+        threads_done = 0;
+        pair_queue.push({ { 0,3 } ,{ 1,2 } });
+        worker_cv.notify_one();
+        main_cv.wait(lck, [&]() {return threads_done >= 2; });
+        threads_done = 0;
+        pair_queue.push({ { 0,0 } ,{ 1,1 } ,{ 2,2 } ,{ 3,3 } });
+        worker_cv.notify_one();
+        main_cv.wait(lck, [&]() {return threads_done >= 4; });
+        threads_done = 0;
+    }
+
+    void end_work() {
+        time_to_join = true;
+        worker_cv.notify_all();
+        for (unsigned int i = 0; i < threads * 2; ++i)
+            if (thread_array[i].joinable()) thread_array[i].join();
+    }
+
+    void update_multithreading_pre2_norand() {
+        thread_array[0] = std::thread(&GravityParticles::update_multithreading_cross2, this, std::ref(minstd_rands[0]), sections_start[0], sections_end[0], sections_start[1], sections_end[1]);
+        thread_array[1] = std::thread(&GravityParticles::update_multithreading_cross2, this, std::ref(minstd_rands[1]), sections_start[2], sections_end[2], sections_start[3], sections_end[3]);
+        if (thread_array[0].joinable())
+            thread_array[0].join();
+        if (thread_array[1].joinable())
+            thread_array[1].join();
+
+        thread_array[0] = std::thread(&GravityParticles::update_multithreading_cross2, this, std::ref(minstd_rands[0]), sections_start[0], sections_end[0], sections_start[2], sections_end[2]);
+        thread_array[1] = std::thread(&GravityParticles::update_multithreading_cross2, this, std::ref(minstd_rands[1]), sections_start[1], sections_end[1], sections_start[3], sections_end[3]);
+        if (thread_array[0].joinable())
+            thread_array[0].join();
+        if (thread_array[1].joinable())
+            thread_array[1].join();
+
+        thread_array[0] = std::thread(&GravityParticles::update_multithreading_cross2, this, std::ref(minstd_rands[0]), sections_start[0], sections_end[0], sections_start[3], sections_end[3]);
+        thread_array[1] = std::thread(&GravityParticles::update_multithreading_cross2, this, std::ref(minstd_rands[1]), sections_start[1], sections_end[1], sections_start[2], sections_end[2]);
+        if (thread_array[0].joinable())
+            thread_array[0].join();
+        if (thread_array[1].joinable())
+            thread_array[1].join();
+
+        thread_array[0] = std::thread(&GravityParticles::update_multithreading_own2, this, std::ref(minstd_rands[0]), sections_start[0], sections_end[0]);
+        thread_array[1] = std::thread(&GravityParticles::update_multithreading_own2, this, std::ref(minstd_rands[1]), sections_start[1], sections_end[1]);
+        thread_array[2] = std::thread(&GravityParticles::update_multithreading_own2, this, std::ref(minstd_rands[2]), sections_start[2], sections_end[2]);
+        thread_array[3] = std::thread(&GravityParticles::update_multithreading_own2, this, std::ref(minstd_rands[3]), sections_start[3], sections_end[3]);
+        if (thread_array[0].joinable())
+            thread_array[0].join();
+        if (thread_array[1].joinable())
+            thread_array[1].join();
+        if (thread_array[2].joinable())
+            thread_array[2].join();
+        if (thread_array[3].joinable())
+            thread_array[3].join();
+    }
+
+    void update_multithreading() {
+        //divide array in a-b-c-d and do a-b&c-d then a-c&b-d and then a-d&b-c then oneselves
+        //there's probably some smart template programming you can use to automate that with more than two threads
+        for (const auto& a : thread_pairs) {
+            for (std::size_t i = 0; i < a.size(); ++i) {
+                const std::size_t first_contender = a[i].first;
+                const std::size_t second_contender = a[i].second;
+                const std::size_t first_start = sections_start[first_contender];
+                const std::size_t first_end = sections_end[first_contender];
+                const std::size_t second_start = sections_start[second_contender];
+                const std::size_t second_end = sections_end[second_contender];
+                thread_array[i] = std::thread(&GravityParticles::update_multithreading_cross, this, std::ref(minstd_rands[i]), first_start, first_end, second_start, second_end);
+            }
+            for (std::size_t i = 0; i < a.size();++i) {
+                if (thread_array[i].joinable())
+                    thread_array[i].join();
+            }
+        }
+
+        for (std::size_t i = 0; i < threads*2; ++i) {
+            const std::size_t first_start = sections_start[i];
+            const std::size_t first_end = sections_end[i];
+            thread_array[i] = std::thread(&GravityParticles::update_multithreading_own, this, std::ref(minstd_rands[i]), first_start, first_end);
+        }
+        for (std::size_t i = 0; i < threads*2; ++i) {
+            if (thread_array[i].joinable())
+                thread_array[i].join();
+        }
+
+        /*for (std::size_t i = 0; i < threads; ++i) {
+            const std::size_t first_start = sections_start[i * 2];
+            const std::size_t first_end = sections_end[i * 2 + 1];
+            thread_array[i] = std::thread(&GravityParticles::update_multithreading_own, this, std::ref(minstd_rands[i]), first_start, first_end);
+        }
+        for (std::size_t i = 0; i < threads; ++i) {
+            if (thread_array[i].joinable())
+                thread_array[i].join();
+        }*/
+    }
+
+    void update() {
+        for (std::size_t i = 0; i < vertexes.getVertexCount(); ++i) {
+            for (std::size_t j = i + 1; j < vertexes.getVertexCount(); ++j) {
+                Point a = Point(p_position[i], p_speed[i], 1);
+                Point b = Point(p_position[j], p_speed[j], 1);
+
+                attr(a, b, minstd_rands[0]);
+            }
+        }
+        for (std::size_t i = 0; i < vertexes.getVertexCount(); ++i) {
+            p_position[i].x += p_speed[i].x;
+            p_position[i].y += p_speed[i].y;
+        }
+    }
+
+    void print() {
+        std::cout << std::setiosflags(std::ios_base::scientific);
+        std::cout << std::setprecision(3);
+        for (std::size_t i = 0; i < vertexes.getVertexCount(); ++i) {
+            Point a = Point(p_position[i], p_speed[i], 1);
+            std::cout << "{"<<i<<","<<a.speed.x<<","<<a.speed.y<<"}";
+        }
+        std::cout << "\n";
+    }
+};
+
+/*
+* seed=1607590604llu
+* for (std::size_t i = 0; i < vertexes.getVertexCount(); ++i) {
+            float x = (i * 431+1097) % 800;
+            float y = (i * 577+691+i*5) % 800;
+            vertexes[i].position = {x,y};
+        }
+        if (size > 0) {
+            vertexes[0].position = { 570,442 };
+        }
+        if (size > 1) {
+            vertexes[1].position = { 317,699 };
+        }
+const double gravity_constant = 3e-3;
+    const double probabilistic_gravity_constant = 1e-6;
+    const double min_distance = 1/2.;
+
+#include<SFML/Graphics.hpp>
+#include<random>
+#include<iostream>
+
+class Particles : public sf::Drawable, public sf::Transformable
+{
+public:
+    Particles(sf::PrimitiveType pt, std::size_t size):
+        vertexes(pt,size)
+    {
+        p_speed.resize(size, {{0},{0}});
+    }
+
+    Particles(sf::PrimitiveType pt):
+        Particles(pt,0)
+    {};
+
+protected:
+    sf::VertexArray vertexes;
+    std::vector<sf::Vector2f> p_speed;
+
+    virtual void draw(sf::RenderTarget& target, sf::RenderStates states) const
+    {
+        // apply the transform
+        states.transform *= getTransform();
+
+        // our particles don't use a texture
+        states.texture = NULL;
+
+        // draw the vertex array
+        target.draw(vertexes, states);
+    }
+private:
+};
+
+template<typename f>
+f distance(sf::Vector2<f> v, sf::Vector2<f> w) {
+    const f dx = w.x - v.x;
+    const f dy = w.y - v.y;
+    return std::sqrt(dx * dx + dy * dy );
+}
+
+template<typename f>
+sf::Vector2<f> inverse_square_on_second(sf::Vector2<f> v, sf::Vector2<f> w, f error = { 3e-3 }) {
+    const f dx = w.x - v.x;
+    const f dy = w.y - v.y;
+    if (dx == 0 && dy == 0) return { {0},{0} };
+    const f distance = std::sqrt(dx * dx + dy * dy + error);
+    const f cubed = distance * distance * distance;
+    return { dx / cubed,dy / cubed };
+}
+
+template<typename f, typename d>
+sf::Vector2<f> normalize_on_second(sf::Vector2<f> v, sf::Vector2<f> w, d dist) {
+    const f dx = w.x - v.x;
+    const f dy = w.y - v.y;
+    return { static_cast<f>(dx * dist),static_cast<f>(dy * dist) };
+}
+struct Point {
+    sf::Vertex& position;
+    sf::Vector2f& speed;
+    float mass{ 1 };
+    Point(sf::Vertex& position, sf::Vector2f& speed, float mass)
+        :position(position), speed(speed), mass(mass) {};
+};
+
+struct attractor {
+    const double gravity_constant = 3e-3;
+    const double probabilistic_gravity_constant = 1e-6;
+    const double min_distance = 1/2.;
+    std::mt19937_64 gen;
+    enum class type {
+        classic,
+        probabilistic
+    } t;
+
+    attractor(type t) :
+        t(t)
+    {
+        std::random_device rd{};
+        auto seed = rd();
+        std::cout << "Seed=" << seed<<"\n";
+        gen.seed(seed);
+        gen.seed(1607590604llu);
+        std::cout << "Actual seed=1607590604llu\n";
+    };
+    void operator()(Point& p1,Point& p2) {
+        switch (t) {
+        case type::classic:
+            classic_gravity(p1, p2);
+            break;
+        case type::probabilistic:
+            probabilistic_gravity(p1, p2);
+            break;
+        }
+    };
+
+    void classic_gravity(Point& p1, Point& p2) {
+        sf::Vector2f inversesquare = inverse_square_on_second(p1.position.position, p2.position.position);
+        inversesquare.x *= gravity_constant;
+        inversesquare.y *= gravity_constant;
+        p2.speed.x -= inversesquare.x*p1.mass;
+        p2.speed.y -= inversesquare.y * p1.mass;
+        p1.speed.x += inversesquare.x * p2.mass;
+        p1.speed.y += inversesquare.y * p2.mass;
+    }
+
+    void probabilistic_gravity(Point& p1, Point& p2) {
+        double d = min_distance/distance(p1.position.position, p2.position.position);
+        std::bernoulli_distribution bernoulli(d*d);
+        if (bernoulli(gen)) {
+            auto acceleration = normalize_on_second(p1.position.position, p2.position.position, d);
+            acceleration.x *= probabilistic_gravity_constant;
+            acceleration.y *= probabilistic_gravity_constant;
+            p2.speed.x -= acceleration.x * p1.mass;
+            p2.speed.y -= acceleration.y * p1.mass;
+            p1.speed.x += acceleration.x * p2.mass;
+            p1.speed.y += acceleration.y * p2.mass;
+        }
+    }
+};
+
+class GravityParticles : public Particles {
+public:
+    attractor attr{ attractor::type::probabilistic };
+    GravityParticles(sf::PrimitiveType pt) :
+        Particles(pt)
+    {};
+    GravityParticles(sf::PrimitiveType pt, std::size_t size)
+        :Particles(pt,size)
+    {
+        for (std::size_t i = 0; i < vertexes.getVertexCount(); ++i) {
+            float x = (i * 431+1097) % 800;
+            float y = (i * 577+691+i*5) % 800;
+            vertexes[i].position = {x,y};
+        }
+        if (size > 0) {
+            vertexes[0].position = { 570,442 };
+        }
+        if (size > 1) {
+            vertexes[1].position = { 317,699 };
+        }
+    }
+
+    void update() {
+        for (std::size_t i = 0; i < vertexes.getVertexCount(); ++i) {
+            for (std::size_t j = i+1; j < vertexes.getVertexCount(); ++j) {
+                Point a = Point(vertexes[i], p_speed[i], 1);
+                Point b = Point(vertexes[j], p_speed[j], 1);
+
+                attr(a, b);
+            }
+        }
+        for (std::size_t i = 0; i < vertexes.getVertexCount(); ++i) {
+            vertexes[i].position.x += p_speed[i].x;
+            vertexes[i].position.y += p_speed[i].y;
+        }
+    }
+};
+
+
+*/
