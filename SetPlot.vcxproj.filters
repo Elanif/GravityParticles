@@ -44,4 +44,12 @@
       <Filter>Resource Files</Filter>
     </Text>
   </ItemGroup>
+  <ItemGroup>
+    <None Include="array256.bin">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="array65536.bin">
+      <Filter>Resource Files</Filter>
+    </None>
+  </ItemGroup>
 </Project>

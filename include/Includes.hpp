@@ -77,3 +77,57 @@ struct DelayManager {
 		max_extra_delay = min_delay_error;
 	};
 };
+
+
+
+typedef sf::Vector2<double> Vector2d;
+template<class T>
+using container_type = std::vector<T>;
+using namespace std::literals;
+
+template<typename f>
+constexpr f distance(const sf::Vector2<f> v, const sf::Vector2<f> w) {
+	const f dx = w.x - v.x;
+	const f dy = w.y - v.y;
+	return std::sqrt(dx * dx + dy * dy);
+}
+
+template<typename f>
+constexpr f distance_squared(const sf::Vector2<f> v, const sf::Vector2<f> w) {
+	const f dx = w.x - v.x;
+	const f dy = w.y - v.y;
+	return dx * dx + dy * dy;
+}
+
+
+template<typename f>
+constexpr f distance_squared_error(const sf::Vector2<f> v, const sf::Vector2<f> w) {
+	const f dx = w.x - v.x;
+	const f dy = w.y - v.y;
+	return dx * dx + dy * dy + minerror;
+}
+
+template<typename f>
+constexpr sf::Vector2<f> inverse_square_on_second_nobranch(const sf::Vector2<f> v, const sf::Vector2<f> w) {
+	const f dx = w.x - v.x;
+	const f dy = w.y - v.y;
+	const f distance = std::sqrt(dx * dx + dy * dy + minerror);
+	const f cubed = distance * distance * distance;
+	return { dx / cubed, dy / cubed };
+}
+
+template<typename f>
+constexpr sf::Vector2<f> inverse_square_on_second_nobranch(const sf::Vector2<f> v, const sf::Vector2<f> w, const f distance_squared) {
+	const f dx = w.x - v.x;
+	const f dy = w.y - v.y;
+	const f distance = std::sqrt(distance_squared);
+	const f cubed = distance * distance * distance;
+	return { dx / cubed, dy / cubed };
+}
+
+template<typename f, typename d>
+constexpr sf::Vector2<f> normalize_on_second(const sf::Vector2<f> v, const sf::Vector2<f> w, d dist) {
+	const f dx = w.x - v.x;
+	const f dy = w.y - v.y;
+	return { static_cast<f>(dx / dist), static_cast<f>(dy / dist) };
+}

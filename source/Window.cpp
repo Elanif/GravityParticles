@@ -50,6 +50,9 @@ void Window::render_thread() {
 
 	sf::View view(sf::Vector2f(0, 0), sf::Vector2f(radius*2.5, radius*2.5));
 
+	bool multithreading = false;
+	std::cout << "Multithreading? 1 yes 0 no";
+	std::cin >> multithreading;
 
 	std::chrono::high_resolution_clock c;
 	window.setView(view);
@@ -66,7 +69,8 @@ void Window::render_thread() {
 	DelayManager delay_manager;
 	long long time_per_frame = 1000000000 / 144;
 
-	gp.update_tree(true);
+	//gp.update_tree(true);
+	gp.start_work();
 
 	while (!close_window) {
 		while (auto event = event_queue.pop_if_not_empty())
@@ -148,9 +152,11 @@ void Window::render_thread() {
 			//gp.update_multithreading();
 			//gp.update_multithreading_pre2();
 			//gp.update_multithreading_pre2_norand();
-			//gp.continue_work();
 			//gp.update();
-			gp.update_tree();
+			if (multithreading)
+				gp.continue_work();
+			else
+				gp.update_tree();
 		}
 	}
 	gp.stop_work();

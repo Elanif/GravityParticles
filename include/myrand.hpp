@@ -48,6 +48,9 @@ struct rand65536 {
     const double& operator()() {
         return arr65536[++state];
     }
+    using result_type = double;
+    static constexpr double min = 0;
+    static constexpr double max = 1;
 };
 
 struct xorshift32 {

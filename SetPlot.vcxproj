@@ -177,6 +177,10 @@
   <ItemGroup>
     <Text Include="OldAttractors.txt" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="array256.bin" />
+    <None Include="array65536.bin" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

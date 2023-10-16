@@ -12,6 +12,9 @@ protected:
     std::queue<Event> q;
     std::mutex m;
 public:
+    std::queue<Event>& data() {
+        return q;
+    }
     template<typename Function, typename... Args>
     void do_locking_operation(Function&& function, Args&... args) {
         std::scoped_lock<std::mutex> lock(m);

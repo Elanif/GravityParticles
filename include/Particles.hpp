@@ -21,53 +21,6 @@ template<class T>
 using container_type = std::vector<T>;
 using namespace std::literals;
 
-template<typename f>
-constexpr f distance(const sf::Vector2<f> v, const sf::Vector2<f> w) {
-    const f dx = w.x - v.x;
-    const f dy = w.y - v.y;
-    return std::sqrt(dx * dx + dy * dy);
-}
-
-template<typename f>
-constexpr f distance_squared(const sf::Vector2<f> v, const sf::Vector2<f> w) {
-    const f dx = w.x - v.x;
-    const f dy = w.y - v.y;
-    return dx * dx + dy * dy;
-}
-
-
-template<typename f>
-constexpr f distance_squared_error(const sf::Vector2<f> v, const sf::Vector2<f> w) {
-    const f dx = w.x - v.x;
-    const f dy = w.y - v.y;
-    return dx * dx + dy * dy + minerror;
-}
-
-template<typename f>
-constexpr sf::Vector2<f> inverse_square_on_second_nobranch(const sf::Vector2<f> v, const sf::Vector2<f> w) {
-    const f dx = w.x - v.x;
-    const f dy = w.y - v.y;
-    const f distance = std::sqrt(dx * dx + dy * dy + minerror);
-    const f cubed = distance * distance * distance;
-    return { dx / cubed, dy / cubed };
-}
-
-template<typename f>
-constexpr sf::Vector2<f> inverse_square_on_second_nobranch(const sf::Vector2<f> v, const sf::Vector2<f> w, const f distance_squared) {
-    const f dx = w.x - v.x;
-    const f dy = w.y - v.y;
-    const f distance = std::sqrt(distance_squared);
-    const f cubed = distance * distance * distance;
-    return { dx / cubed, dy / cubed };
-}
-
-template<typename f, typename d>
-constexpr sf::Vector2<f> normalize_on_second(const sf::Vector2<f> v, const sf::Vector2<f> w, d dist) {
-    const f dx = w.x - v.x;
-    const f dy = w.y - v.y;
-    return { static_cast<f>(dx / dist), static_cast<f>(dy / dist) };
-}
-
 struct Point {
     Vector2d& position;
     Vector2d& speed;
@@ -163,6 +116,19 @@ struct attractor {
         }
     }
 
+    /*template<class UniformRandomBitGenerator>
+    void probabilistic_gravity_multiple(Point& p1, GravitySource const& p2, double const& dist_squared_error, UniformRandomBitGenerator& re) const { */
+    void probabilistic_gravity_multiple(Point& p1, GravitySource const& p2, int_fast32_t const& weight, double const& dist_squared_error, std::minstd_rand& re) const {
+        std::binomial_distribution<> b{weight, 1. / dist_squared_error };
+        double multiplier = b(re);
+        auto sqrt_distance = std::sqrt(dist_squared_error);
+        auto acceleration = normalize_on_second(p1.position, p2.position, sqrt_distance);
+        acceleration.x *= probabilistic_gravity_constant;
+        acceleration.y *= probabilistic_gravity_constant;
+        p1.speed.x += acceleration.x * multiplier;
+        p1.speed.y += acceleration.y * multiplier;
+    }
+
     void classic_gravity_onesided(Point& p1, GravitySource const& p2, double const& dist_squared_error) const {
         Vector2d inversesquare = inverse_square_on_second_nobranch(p1.position, p2.position, dist_squared_error);
         inversesquare.x *= classic_gravity_constant;
@@ -174,6 +140,7 @@ struct attractor {
 
 struct quadtree_node { //add 4 of these at a time
     double weight{ 0 };
+    int_fast32_t weight_int{ 0 };
     Vector2d center;
     Vector2d size;
     Vector2d center_of_mass{ 0,0 };
@@ -237,6 +204,7 @@ struct quadtree {
             node.point_index = point_index;
             node.center_of_mass = p_position[point_index];
             ++node.weight;
+            ++node.weight_int;
         }
         else if (node.first_child == -1 && node.point_index != -1) { // only one node to relocate
             std::size_t old_point_index = static_cast<std::size_t>(node.point_index);
@@ -252,6 +220,7 @@ struct quadtree {
             //gotta do it before push_back or iterators are invalidated
             node.center_of_mass = (p_position[point_index] * 1. + node.center_of_mass * node.weight) / (1. + node.weight);
             ++node.weight;
+            ++node.weight_int;
 
             nodes.push_back(quadtree_node{.center = center_new, .size = size_new });
             center_new.x += size_new.x;
@@ -278,6 +247,7 @@ struct quadtree {
             //update center of mass //Todo if different weights
             node.center_of_mass = (p_position[point_index] * 1. + node.center_of_mass * node.weight) / (1. + node.weight);
             ++node.weight;
+            ++node.weight_int;
 
             Vector2d size_new = node.size / 2.;
             Vector2d topleft_old = node.center - size_new;
@@ -293,18 +263,19 @@ class GravityParticles : public Particles {
 public:
     attractor attr;
 
-    static const uint_fast32_t threads = 2u;
-    static const uint_fast32_t cache_line_length = 1u;
+    static const uint_fast32_t section_count = 4u;
+    static const uint_fast32_t threads = 4u;
+    static const uint_fast32_t min_section_length = 1u;
     static const double max_minstdrand;
     std::minstd_rand minstd_rand;
     rand65536 rnd65536;
-    std::size_t sections_start[threads * 2u] = { 0 };
-    std::size_t sections_end[threads * 2u] = { 0 };
-    std::thread thread_array[threads * 2u];
+    std::size_t sections_start[section_count] = { 0 };
+    std::size_t sections_end[section_count] = { 0 };
+    std::thread thread_array[threads];
     //todo
     Vector2d topleft{ -1,-1 };
     Vector2d bottomright{ 1,1 };
-    quadtree qtree{ p_position,Vector2d{-800,-800},Vector2d{800,800}};
+    quadtree qtree{ p_position,Vector2d{-800,-800},Vector2d{800,800} };
 
 
     GravityParticles(sf::PrimitiveType pt, type t) :
@@ -322,23 +293,28 @@ public:
                 p_position[i] = { uid(minstd_rands[0]),uid(minstd_rands[0]) };
             } while (p_position[i].x * p_position[i].x + p_position[i].y * p_position[i].y > radius * radius);*/
             double angle = angleud(minstd_rand);
+            double speed = uid(minstd_rand);
             do {
                 p_position[i] = uid(minstd_rand) * Vector2d { std::cos(angle), std::sin(angle) };
             } while (p_position[i].x * p_position[i].x + p_position[i].y * p_position[i].y > radius * radius);
+            for (int i = 0; i < vertex_count; ++i) {
+                p_speed[i].x = p_position[i].y / std::sqrt(p_position[i].y* p_position[i].y+ p_position[i].x* p_position[i].x) *classic_gravity_constant*std::sqrt(radius);
+                p_speed[i].y = -p_position[i].x / std::sqrt(p_position[i].y * p_position[i].y + p_position[i].x * p_position[i].x) * classic_gravity_constant * std::sqrt(radius);
+            }
         }
         sections_start[0] = 0;
-        if (vertex_count <= cache_line_length)
+        if (vertex_count <= min_section_length)
             sections_end[0] = vertex_count;
         else {
-            sections_end[0] = static_cast<uint_fast32_t>(vertex_count) / (threads * 2u);
-            sections_end[0] = ((sections_end[0] + 1) / cache_line_length) * cache_line_length;
-            for (uint_fast32_t i = 1; i < threads * 2 && sections_end[i - 1] < vertex_count; ++i) {
+            sections_end[0] = static_cast<uint_fast32_t>(vertex_count) / section_count;
+            sections_end[0] = ((sections_end[0] + 1) / min_section_length) * min_section_length;
+            for (uint_fast32_t i = 1; i < section_count && sections_end[i - 1] < vertex_count; ++i) {
                 //stupid warning even after the cast 
-                sections_end[i] = ((i + uint_fast32_t{ 1 }) * static_cast<uint_fast32_t>(vertex_count)) / (threads * 2u);
-                sections_end[i] = (sections_end[i] / cache_line_length) * cache_line_length;
+                sections_end[i] = ((i + uint_fast32_t{ 1 }) * static_cast<uint_fast32_t>(vertex_count)) / section_count;
+                sections_end[i] = (sections_end[i] / min_section_length) * min_section_length;
                 sections_start[i] = sections_end[i - 1];
             }
-            if (sections_end[threads * 2 - 1] > vertex_count)
+            if (sections_end[section_count - 1] > vertex_count)
                 sections_end[0] = vertex_count;
         }
     }
@@ -359,19 +335,20 @@ public:
         double dist_squared = distance_squared_error(node.center_of_mass, p.position);
         double width = node.size.x;
         //if (width / dist < theta || node.first_child == -1) {//far enough or no children so it's always "approx" at this point
-        if (width * width < theta*theta* dist_squared) {
+        if (width * width < theta * theta * dist_squared) {
             //approx
             Vector2d speed{ 0,0 };
             GravitySource papprox{ node.center_of_mass, node.weight };
             attr.classic_gravity_onesided(p, papprox, dist_squared);
+            //attr.probabilistic_gravity_multiple(p, papprox, node.weight_int, dist_squared, minstd_rand); too slow
         }
-        else if ( node.first_child == -1) {//far enough or no children so it's always "approx" at this point
-            Vector2d speed { 0,0 };
+        else if (node.first_child == -1) {//far enough or no children so it's always "approx" at this point
+            Vector2d speed{ 0,0 };
             GravitySource papprox{ node.center_of_mass, node.weight };
             attr.probabilistic_gravity_onesided(p, papprox, dist_squared, rnd65536());
         }
         else {
-            for (int_fast32_t i=0; i<4; ++i)
+            for (int_fast32_t i = 0; i < 4; ++i)
                 force_on_point(p, point_index, node.first_child + i);
         }
         return;
@@ -387,7 +364,8 @@ public:
         p_position[i].x += p_speed[i].x;
         p_position[i].y += p_speed[i].y;
     }
-    void update_tree(bool first=false) {
+
+    void build_tree() {
         for (std::size_t i = 0; i < vertex_count; ++i) {
             topleft.x = std::min(topleft.x, p_position[i].x);
             topleft.y = std::min(topleft.y, p_position[i].y);
@@ -397,16 +375,21 @@ public:
         topleft -= {1., 1.};
         bottomright += {1., 1.};
         fill_quadtree(topleft, bottomright);
-        for (std::size_t i = 0; i < vertex_count; ++i) {
+    }
+
+    void update_tree(bool first = false, std::size_t section_start={0}, std::size_t section_end = {section_count - 1}) {
+        build_tree();
+        for (std::size_t i = sections_start[section_start]; i < sections_end[section_end]; ++i) {
+        //for (std::size_t i = 0; i < vertex_count; ++i) {
             Point p = Point(p_position[i], p_speed[i], 1);
             force_on_point(p, i, 0);
         }
         if (first) {
-            for (std::size_t i = 0; i < vertex_count; ++i) {
+            for (std::size_t i = sections_start[section_start]; i < sections_end[section_end]; ++i) {
                 p_speed[i] /= 2.;
             }
         }
-        for (std::size_t i = 0; i < vertex_count; ++i) {
+        for (std::size_t i = sections_start[section_start]; i < sections_end[section_end]; ++i) {
             onestep(i);
         }
     }
@@ -417,16 +400,17 @@ public:
     std::mutex main_mutex;
     std::mutex worker_m;
     uint_fast32_t threads_done = 0;
-    SafeQueue<std::pair<std::size_t, std::size_t> > pair_queue;
+    SafeQueue<std::size_t> section_queue;
 
     void wait_work(std::condition_variable& cv, std::mutex& worker_m) {
-        rand65536 minstdrand2;
+        rand65536 fast_random_double;
         do {
             std::unique_lock<std::mutex> lck(worker_m);
-            cv.wait(lck, [&]() { return (pair_queue.size() > 0) || time_to_join; });
-            if (time_to_join) return;
-            auto p = pair_queue.pop();
+            cv.wait(lck, [&]() { return (section_queue.size() > 0) || time_to_join; });
+            if (time_to_join) return; //data race
+            auto p = section_queue.pop();
             cv.notify_one();
+            update_tree(false, p, p);
             {
                 std::scoped_lock lck(main_mutex);
                 ++threads_done;
@@ -436,18 +420,19 @@ public:
     }
 
     void start_work() {
-        for (uint_fast32_t i = 0; i < threads * 2; ++i)
+        for (uint_fast32_t i = 0; i < threads; ++i)
             thread_array[i] = std::thread(&GravityParticles::wait_work, this, std::ref(worker_cv), std::ref(worker_m));
     }
 
     void continue_work() {
-        /*for (const auto& q : thread_pairs) {
-            pair_queue.push(q);
-            worker_cv.notify_one();
-            std::unique_lock<std::mutex> lck(main_mutex);
-            main_cv.wait(lck, [&]() {return threads_done >= q.size(); });
-            threads_done = 0;
-        };*/
+        build_tree();
+        for (std::size_t i = 0; i < section_count; ++i) {
+            section_queue.data().push(i); //dangerous
+        }
+        worker_cv.notify_one();
+        std::unique_lock<std::mutex> lck(main_mutex);
+        main_cv.wait(lck, [&]() {return threads_done >= section_count; });
+        threads_done = 0;
     }
 
     void stop_work() {
@@ -456,7 +441,7 @@ public:
             time_to_join = true;
         }
         worker_cv.notify_all();
-        for (uint_fast32_t i = 0; i < threads * 2; ++i)
+        for (uint_fast32_t i = 0; i < threads; ++i)
             if (thread_array[i].joinable()) thread_array[i].join();
     }
 
