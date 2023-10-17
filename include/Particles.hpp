@@ -159,9 +159,9 @@ struct quadtree_node_plusentials {
 };
 
 struct quadtree_node_essentials { //add 4 of these at a time
-    float weight{ 0 };
-    float size;
-    sf::Vector2f center_of_mass{ 0,0 };
+    double weight{ 0 };
+    double size{ 0 };
+    Vector2d center_of_mass{ 0,0 };
 
     //points to first child if this node is a branch (i.e. father of more nodes)
     //point to node_information 
@@ -206,24 +206,25 @@ struct quadtree {
         //dfs
         uint_fast32_t depth = 0;
         quadtree_node& node = nodes[node_index];
-        /*auto& nodee = nodes_essentials[node_index];
-        auto& nodep = nodes_plusentials[node_index];*/
+        auto& nodee = nodes_essentials[node_index];
+        auto& nodep = nodes_plusentials[node_index];
         if (node.first_child==-1 && node.point_index == -1) { //empty branch
             node.point_index = point_index;
-            //nodep.point_index = point_index;
+            nodep.point_index = point_index;
             node.center_of_mass = p_position[point_index];
-            //nodee.center_of_mass.x = p_position[point_index].x;
-            //nodee.center_of_mass.y = p_position[point_index].y;
+            nodee.center_of_mass.x = p_position[point_index].x;
+            nodee.center_of_mass.y = p_position[point_index].y;
             ++node.weight;
-            //++nodee.weight;
+            ++nodee.weight;
             ++node.weight_int;
             //++nodee.weight_int;
         }
         else if (node.first_child == -1 && node.point_index != -1) { // only one node to relocate
             std::size_t old_point_index = static_cast<std::size_t>(node.point_index);
             node.point_index = -1;
-            node.point_index = -1;
+            nodep.point_index = -1;
             int_fast32_t new_node_index = node.first_child = nodes.size();
+            nodee.first_child = new_node_index;
             Vector2d center_old = node.center;
             Vector2d size_new = node.size/2.;
             Vector2d center_new = center_old- node.size / 4.;
@@ -233,17 +234,33 @@ struct quadtree {
             //update center of mass //Todo if different weights
             //gotta do it before push_back or iterators are invalidated
             node.center_of_mass = (p_position[point_index] * 1. + node.center_of_mass * node.weight) / (1. + node.weight);
+            Vector2d dub = (p_position[point_index] * 1. + node.center_of_mass * node.weight) / (1. + node.weight);
+            nodee.center_of_mass.x = dub.x;
+            nodee.center_of_mass.y=dub.y;
             ++node.weight;
+            ++nodee.weight;
             ++node.weight_int;
 
             nodes.push_back(quadtree_node{.center = center_new, .size = size_new });
+            nodes_plusentials.push_back(quadtree_node_plusentials{.center = center_new, .size = size_new });
+            nodes_essentials.push_back(quadtree_node_essentials{.size = size_new.x });
+            //nodes_essentials.push_back(quadtree_node_essentials{.size = static_cast<float>(size_new.x) });
             center_new.x += size_new.x;
             nodes.push_back(quadtree_node{.center = center_new, .size = size_new });
+            nodes_plusentials.push_back(quadtree_node_plusentials{.center = center_new, .size = size_new });
+            nodes_essentials.push_back(quadtree_node_essentials{.size = size_new.x });
+            //nodes_essentials.push_back(quadtree_node_essentials{.size = static_cast<float>(size_new.x) });
             center_new.x -= size_new.x;
             center_new.y += size_new.y;
             nodes.push_back(quadtree_node{.center = center_new, .size = size_new });
+            nodes_plusentials.push_back(quadtree_node_plusentials{.center = center_new, .size = size_new });
+            nodes_essentials.push_back(quadtree_node_essentials{.size = size_new.x });
+            //nodes_essentials.push_back(quadtree_node_essentials{.size = static_cast<float>(size_new.x) });
             center_new.x += size_new.x;
             nodes.push_back(quadtree_node{.center = center_new, .size = size_new });
+            nodes_plusentials.push_back(quadtree_node_plusentials{.center = center_new, .size = size_new });
+            nodes_essentials.push_back(quadtree_node_essentials{.size = size_new.x });
+            //nodes_essentials.push_back(quadtree_node_essentials{.size = static_cast<float>(size_new.x) });
 
             int_fast32_t index_add = 0;
             index_add += (p_position[old_point_index].x - topleft_old.x) / size_new.x;
@@ -260,7 +277,11 @@ struct quadtree {
         else {
             //update center of mass //Todo if different weights
             node.center_of_mass = (p_position[point_index] * 1. + node.center_of_mass * node.weight) / (1. + node.weight);
+            Vector2d dub = (p_position[point_index] * 1. + node.center_of_mass * node.weight) / (1. + node.weight);
+            nodee.center_of_mass.x = dub.x;
+            nodee.center_of_mass.y = dub.y;
             ++node.weight;
+            ++nodee.weight;
             ++node.weight_int;
 
             Vector2d size_new = node.size / 2.;
@@ -333,25 +354,33 @@ public:
 
     void force_on_point(Point& p, std::size_t const& point_index, int_fast32_t node_index = 0) {
         quadtree_node& node = qtree.nodes[node_index];
-        if (node.weight == 0 || node.point_index == point_index)
+        quadtree_node_essentials& nodee = qtree.nodes_essentials[node_index];
+        if (nodee.weight == 0)
+        //if (node.weight == 0 || node.point_index == point_index)
             return;
-        double dist_squared = distance_squared_error(node.center_of_mass, p.position);
+        //double dist_squared = distance_squared_error(node.center_of_mass, p.position);
+        double dist_squared = distance_squared_error(nodee.center_of_mass, p.position);
+        //double width = node.size.x;
         double width = node.size.x;
         if (width * width < theta * theta * dist_squared) {
             //approx
             Vector2d speed{ 0,0 };
-            GravitySource papprox{ node.center_of_mass, node.weight };
+            GravitySource papprox{ nodee.center_of_mass, nodee.weight };
+            //GravitySource papprox{ node.center_of_mass, node.weight };
             attr.classic_gravity_onesided(p, papprox, dist_squared);
             //attr.probabilistic_gravity_multiple(p, papprox, node.weight_int, dist_squared, minstd_rand); too slow
         }
-        else if (node.first_child == -1) {//far enough or no children so it's always "approx" at this point
+        //else if (node.first_child == -1) {//far enough or no children so it's always "approx" at this point
+        else if (nodee.first_child == -1) {//far enough or no children so it's always "approx" at this point
             Vector2d speed{ 0,0 };
-            GravitySource papprox{ node.center_of_mass, node.weight };
+            //GravitySource papprox{ node.center_of_mass, node.weight };
+            GravitySource papprox{ nodee.center_of_mass, nodee.weight };
             attr.probabilistic_gravity_onesided(p, papprox, dist_squared, rnd65536());
         }
         else {
             for (int_fast32_t i = 0; i < 4; ++i)
-                force_on_point(p, point_index, node.first_child + i);
+                force_on_point(p, point_index, nodee.first_child + i);
+                //force_on_point(p, point_index, node.first_child + i);
         }
         return;
     }
