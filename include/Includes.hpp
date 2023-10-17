@@ -16,7 +16,7 @@ constexpr double pow10(const double& x) {
 	return  0.0005849019 + 0.0003638186 * x + 0.0000908504 * x * x + 0.00001138011 * x * x * x + 7.148143e-7 * x * x * x * x + 1.80063e-8 * x * x * x * x * x;
 }
 
-constexpr long long particles = 2048*8;
+constexpr long long particles = 2048*16;
 constexpr long long updates_per_frame = 1;
 constexpr double radius = 2048*16;
 constexpr double minerror = pow10(-1.6); //-1, -1.2 rips, 1.6 galaxy,-1.9 no galaxies
@@ -24,6 +24,9 @@ constexpr double probabilistic_gravity_constant = minerror*minerror;
 constexpr double classic_gravity_constant = probabilistic_gravity_constant;
 constexpr long long min_delay_error = 1000000;
 constexpr unsigned long long nodes_reserved = particles*3;
+constexpr uint_fast32_t threads = 8u;
+constexpr uint_fast32_t section_count = threads;
+constexpr uint_fast32_t min_section_length = 64u;
 
 struct MyClock {
 	std::chrono::high_resolution_clock::time_point starting_time = std::chrono::high_resolution_clock::now();

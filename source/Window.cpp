@@ -38,6 +38,9 @@ bool Window::isWindowOpen()
 }
 
 void Window::render_thread() {
+	bool multithreading = false;
+	std::cout << "Multithreading? 1 yes 0 no";
+	std::cin >> multithreading;
 
 	window.setActive();
 
@@ -50,9 +53,6 @@ void Window::render_thread() {
 
 	sf::View view(sf::Vector2f(0, 0), sf::Vector2f(radius*2.5, radius*2.5));
 
-	bool multithreading = false;
-	std::cout << "Multithreading? 1 yes 0 no";
-	std::cin >> multithreading;
 
 	std::chrono::high_resolution_clock c;
 	window.setView(view);
@@ -69,8 +69,10 @@ void Window::render_thread() {
 	DelayManager delay_manager;
 	long long time_per_frame = 1000000000 / 144;
 
-	//gp.update_tree(true);
-	gp.start_work();
+	if (multithreading)
+		gp.start_work();
+	else
+		gp.update_tree(true);
 
 	while (!close_window) {
 		while (auto event = event_queue.pop_if_not_empty())
@@ -129,7 +131,7 @@ void Window::render_thread() {
 		fps_clock.restart();
 
 		++frames;
-		if (static_cast<int>(frames) % 120 == 0) {
+		if (static_cast<int>(frames) % 2 == 0) {
 			//bad for multithreading
 			int horiz_length = view.getSize().x;
 			std::stringstream ss;

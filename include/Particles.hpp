@@ -155,21 +155,23 @@ struct quadtree_node_plusentials {
     double weight{ 0 };
     Vector2d center;
     Vector2d size;
+    int_fast32_t point_index = -1; //index of the point here//maybe useless//maybe not cause it acts as a boolean
 };
 
 struct quadtree_node_essentials { //add 4 of these at a time
     float weight{ 0 };
     float size;
-    Vector2d center_of_mass{ 0,0 };
+    sf::Vector2f center_of_mass{ 0,0 };
 
     //points to first child if this node is a branch (i.e. father of more nodes)
     //point to node_information 
     int_fast32_t first_child = -1; //NW NE SW NE, -1 if no children
-    int_fast32_t point_index = -1; //index of the point here//maybe useless//maybe not cause it acts as a boolean
 };
 
 struct quadtree {
     std::vector<quadtree_node> nodes;
+    std::vector<quadtree_node_essentials> nodes_essentials;
+    std::vector<quadtree_node_plusentials> nodes_plusentials;
     std::vector<Vector2d>& p_position;
     Vector2d topleft;
     Vector2d bottomright;
@@ -188,6 +190,10 @@ struct quadtree {
     void reset() {
         nodes.clear();
         nodes.push_back(quadtree_node{ .weight = 0, .center = (topleft + bottomright) / 2., .size = bottomright - topleft });
+        nodes_essentials.clear();
+        nodes_essentials.push_back(quadtree_node_essentials{ .weight = 0 });
+        nodes_plusentials.clear();
+        nodes_plusentials.push_back(quadtree_node_plusentials{ .center = (topleft + bottomright) / 2., .size = bottomright - topleft });
     }
 
     void reset(Vector2d const& topleft, Vector2d const& bottomright) {
@@ -200,14 +206,22 @@ struct quadtree {
         //dfs
         uint_fast32_t depth = 0;
         quadtree_node& node = nodes[node_index];
+        /*auto& nodee = nodes_essentials[node_index];
+        auto& nodep = nodes_plusentials[node_index];*/
         if (node.first_child==-1 && node.point_index == -1) { //empty branch
             node.point_index = point_index;
+            nodep.point_index = point_index;
             node.center_of_mass = p_position[point_index];
+            //nodee.center_of_mass.x = p_position[point_index].x;
+            //nodee.center_of_mass.y = p_position[point_index].y;
             ++node.weight;
+            //++nodee.weight;
             ++node.weight_int;
+            //++nodee.weight_int;
         }
         else if (node.first_child == -1 && node.point_index != -1) { // only one node to relocate
             std::size_t old_point_index = static_cast<std::size_t>(node.point_index);
+            node.point_index = -1;
             node.point_index = -1;
             int_fast32_t new_node_index = node.first_child = nodes.size();
             Vector2d center_old = node.center;
@@ -262,10 +276,6 @@ struct quadtree {
 class GravityParticles : public Particles {
 public:
     attractor attr;
-
-    static const uint_fast32_t section_count = 4u;
-    static const uint_fast32_t threads = 4u;
-    static const uint_fast32_t min_section_length = 1u;
     static const double max_minstdrand;
     std::minstd_rand minstd_rand;
     rand65536 rnd65536;
@@ -297,10 +307,10 @@ public:
             do {
                 p_position[i] = uid(minstd_rand) * Vector2d { std::cos(angle), std::sin(angle) };
             } while (p_position[i].x * p_position[i].x + p_position[i].y * p_position[i].y > radius * radius);
-            for (int i = 0; i < vertex_count; ++i) {
+            /*for (int i = 0; i < vertex_count; ++i) {
                 p_speed[i].x = p_position[i].y / std::sqrt(p_position[i].y* p_position[i].y+ p_position[i].x* p_position[i].x) *classic_gravity_constant*std::sqrt(radius);
                 p_speed[i].y = -p_position[i].x / std::sqrt(p_position[i].y * p_position[i].y + p_position[i].x * p_position[i].x) * classic_gravity_constant * std::sqrt(radius);
-            }
+            }*/
         }
         sections_start[0] = 0;
         if (vertex_count <= min_section_length)
@@ -319,13 +329,6 @@ public:
         }
     }
 
-    void fill_quadtree(Vector2d const& topleft, Vector2d const& bottomright) {
-        qtree.reset(topleft, bottomright);
-        for (std::size_t i = 0; i < vertex_count; ++i) {
-            qtree.add_point(i);
-        }
-    }
-
     double theta = 1;
 
     void force_on_point(Point& p, std::size_t const& point_index, int_fast32_t node_index = 0) {
@@ -334,7 +337,6 @@ public:
             return;
         double dist_squared = distance_squared_error(node.center_of_mass, p.position);
         double width = node.size.x;
-        //if (width / dist < theta || node.first_child == -1) {//far enough or no children so it's always "approx" at this point
         if (width * width < theta * theta * dist_squared) {
             //approx
             Vector2d speed{ 0,0 };
@@ -354,6 +356,31 @@ public:
         return;
     }
 
+    void force_on_point(rand65536& rnd, Point& p, std::size_t const& point_index, int_fast32_t node_index = 0) {
+        quadtree_node& node = qtree.nodes[node_index];
+        if (node.weight == 0 || node.point_index == point_index)
+            return;
+        double dist_squared = distance_squared_error(node.center_of_mass, p.position);
+        double width = node.size.x;
+        if (width * width < theta * theta * dist_squared) {
+            //approx
+            Vector2d speed{ 0,0 };
+            GravitySource papprox{ node.center_of_mass, node.weight };
+            attr.classic_gravity_onesided(p, papprox, dist_squared);
+            //attr.probabilistic_gravity_multiple(p, papprox, node.weight_int, dist_squared, minstd_rand); too slow
+        }
+        else if (node.first_child == -1) {//far enough or no children so it's always "approx" at this point
+            Vector2d speed{ 0,0 };
+            GravitySource papprox{ node.center_of_mass, node.weight };
+            attr.probabilistic_gravity_onesided(p, papprox, dist_squared, rnd());
+        }
+        else {
+            for (int_fast32_t i = 0; i < 4; ++i)
+                force_on_point(rnd, p, point_index, node.first_child + i);
+        }
+        return;
+    }
+
     void perfect_setup() {
         const double x = radius * 0.1;
         p_position[0] = { x,x };
@@ -363,6 +390,13 @@ public:
     void onestep(std::size_t const& i) {
         p_position[i].x += p_speed[i].x;
         p_position[i].y += p_speed[i].y;
+    }
+
+    void fill_quadtree(Vector2d const& topleft, Vector2d const& bottomright) {
+        qtree.reset(topleft, bottomright);
+        for (std::size_t i = 0; i < vertex_count; ++i) {
+            qtree.add_point(i);
+        }
     }
 
     void build_tree() {
@@ -377,19 +411,33 @@ public:
         fill_quadtree(topleft, bottomright);
     }
 
-    void update_tree(bool first = false, std::size_t section_start={0}, std::size_t section_end = {section_count - 1}) {
+    void update_tree(bool first = false, std::size_t section_start = { 0 }, std::size_t section_end = { section_count - 1 }) {
         build_tree();
         for (std::size_t i = sections_start[section_start]; i < sections_end[section_end]; ++i) {
-        //for (std::size_t i = 0; i < vertex_count; ++i) {
             Point p = Point(p_position[i], p_speed[i], 1);
             force_on_point(p, i, 0);
-        }
+        };
         if (first) {
             for (std::size_t i = sections_start[section_start]; i < sections_end[section_end]; ++i) {
                 p_speed[i] /= 2.;
             }
         }
         for (std::size_t i = sections_start[section_start]; i < sections_end[section_end]; ++i) {
+            onestep(i);
+        }
+    }
+    void update_tree_multithreading(rand65536 & rnd, std::size_t section, bool first = false) {
+        for (std::size_t i = sections_start[section]; i < sections_end[section]; ++i) {
+        //for (std::size_t i = 0; i < vertex_count; ++i) {
+            Point p = Point(p_position[i], p_speed[i], 1);
+            force_on_point(rnd, p, i, 0);
+        }
+        if (first) {
+            for (std::size_t i = sections_start[section]; i < sections_end[section]; ++i) {
+                p_speed[i] /= 2.;
+            }
+        }
+        for (std::size_t i = sections_start[section]; i < sections_end[section]; ++i) {
             onestep(i);
         }
     }
@@ -400,17 +448,17 @@ public:
     std::mutex main_mutex;
     std::mutex worker_m;
     uint_fast32_t threads_done = 0;
+    uint_fast32_t threads_woken = 0;
     SafeQueue<std::size_t> section_queue;
 
-    void wait_work(std::condition_variable& cv, std::mutex& worker_m) {
+    void wait_work(std::condition_variable& cv, std::mutex& worker_m, std::size_t section) {
         rand65536 fast_random_double;
         do {
             std::unique_lock<std::mutex> lck(worker_m);
-            cv.wait(lck, [&]() { return (section_queue.size() > 0) || time_to_join; });
+            cv.wait(lck, [&]() { return time_to_join || (threads_woken < threads && threads_done < threads); });
+            ++threads_woken;
             if (time_to_join) return; //data race
-            auto p = section_queue.pop();
-            cv.notify_one();
-            update_tree(false, p, p);
+            update_tree_multithreading(fast_random_double, section, false);
             {
                 std::scoped_lock lck(main_mutex);
                 ++threads_done;
@@ -421,18 +469,16 @@ public:
 
     void start_work() {
         for (uint_fast32_t i = 0; i < threads; ++i)
-            thread_array[i] = std::thread(&GravityParticles::wait_work, this, std::ref(worker_cv), std::ref(worker_m));
+            thread_array[i] = std::thread(&GravityParticles::wait_work, this, std::ref(worker_cv), std::ref(worker_m), i);
     }
 
     void continue_work() {
-        build_tree();
-        for (std::size_t i = 0; i < section_count; ++i) {
-            section_queue.data().push(i); //dangerous
-        }
-        worker_cv.notify_one();
-        std::unique_lock<std::mutex> lck(main_mutex);
-        main_cv.wait(lck, [&]() {return threads_done >= section_count; });
+        build_tree(); 
+        threads_woken=0;
         threads_done = 0;
+        worker_cv.notify_all();
+        std::unique_lock<std::mutex> lck(main_mutex);
+        main_cv.wait(lck, [&]() {return threads_done >= threads; });
     }
 
     void stop_work() {
