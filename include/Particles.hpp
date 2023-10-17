@@ -210,7 +210,7 @@ struct quadtree {
         auto& nodep = nodes_plusentials[node_index];*/
         if (node.first_child==-1 && node.point_index == -1) { //empty branch
             node.point_index = point_index;
-            nodep.point_index = point_index;
+            //nodep.point_index = point_index;
             node.center_of_mass = p_position[point_index];
             //nodee.center_of_mass.x = p_position[point_index].x;
             //nodee.center_of_mass.y = p_position[point_index].y;
